@@ -18,6 +18,8 @@ DEFAULT_ACTION = 'action'
 DEFAULT_ID_RESPONSE = 'requestId'
 DEFAULT_LOG_LEVEL = 'INFO'
 
+MOCKSERVER_HOST_SUFFIX = ".wsmockserver"
+
 LOGGER = logging.getLogger(__name__)
 
 def setup_logger():
@@ -40,7 +42,7 @@ class SocketHttpTranslator:
         self.guid_key_send = guid_key_send
         self.guid_key_receive = guid_key_receive
         self.action_key = action_key
-        self.flow = None
+        self.flows = {}  # Dictionary to store flows for each host
         self.burp_proxy_port = burp_proxy_port
         self.new_guid_to_server_ws_futures = {}
         self.httpx_client = httpx.AsyncClient(proxy=f"http://localhost:{self.burp_proxy_port}", verify=False)
@@ -48,27 +50,29 @@ class SocketHttpTranslator:
     # mitmproxy hooks
 
     async def websocket_start(self, flow: HTTPFlow):
-        LOGGER.info(f"WebSocket connection established: {flow.request.url}")
-        self.flow = flow
+        host = flow.request.host
+        LOGGER.info(f"WebSocket connection established for host {host}: {flow.request.url}")
+        self.flows[host] = flow
 
     async def websocket_message(self, flow: HTTPFlow):
         if not self._validate_websocket_flow(flow):
             return
 
         message = flow.websocket.messages[-1]
+        host = flow.request.host
         if message.from_client:
-            await self._handle_client_websocket(flow, message)
+            await self._handle_client_websocket(flow, message, host)
         else:
-            await self._handle_server_websocket(flow, message)
+            await self._handle_server_websocket(flow, message, host)
 
     async def request(self, flow: HTTPFlow):
         LOGGER.info(f"Request: {flow.request.method} {flow.request.url}")
-        if flow.request.host == "mockserver":
+        if flow.request.host.endswith(MOCKSERVER_HOST_SUFFIX):
             return await self._handle_mock_server_request(flow)
 
     async def response(self, flow: HTTPFlow):
         LOGGER.info(f"Response: {flow.response.status_code} {flow.request.url}")
-        if flow.request.host == "mockserver":
+        if flow.request.host.endswith(MOCKSERVER_HOST_SUFFIX):
             LOGGER.info(f"Response from webserver: {flow.response.text}")
             return await self._handle_mock_server_response(flow)
 
@@ -83,8 +87,8 @@ class SocketHttpTranslator:
             return False
         return True
 
-    async def _handle_client_websocket(self, flow: HTTPFlow, message: WebSocketMessage):
-        LOGGER.info(f"Translating client WebSocket to web request: {message}")
+    async def _handle_client_websocket(self, flow: HTTPFlow, message: WebSocketMessage, host: str):
+        LOGGER.info(f"Translating client WebSocket to web request for host {host}: {message}")
         message_json = self._parse_json_message(message)
         if not message_json:
             return
@@ -97,9 +101,9 @@ class SocketHttpTranslator:
             return
 
         message.drop()  # Don't forward to server as is
-        await self._send_web_request_through_proxy(action, message_json)
+        await self._send_web_request_through_proxy(action, message_json, host)
 
-    async def _handle_server_websocket(self, flow: HTTPFlow, message: WebSocketMessage):
+    async def _handle_server_websocket(self, flow: HTTPFlow, message: WebSocketMessage, host: str):
         message_json = self._parse_json_message(message)
         if not message_json:
             return
@@ -108,7 +112,7 @@ class SocketHttpTranslator:
         if not guid or guid == "heartbeatAck":
             return
 
-        if guid not in self.new_guid_to_server_ws_futures: # Not a response to a client message
+        if guid not in self.new_guid_to_server_ws_futures:  # Not a response to a client message
             return
 
         message.drop()  # Don't forward to client as is
@@ -118,9 +122,16 @@ class SocketHttpTranslator:
     async def _handle_mock_server_request(self, flow: HTTPFlow):
         action = url_safe_decode(flow.request.path_components[0])
         guid = flow.request.headers.get("guid")
-
-        data = json.loads(flow.request.get_text())
-        LOGGER.info(f"Mock server request for action '{action}': {data}")
+        # host = flow.request.headers.get("wshost")
+        host = flow.request.host.split(MOCKSERVER_HOST_SUFFIX)[0]
+        try:
+            data = json.loads(flow.request.get_text())
+        except json.JSONDecodeError as e:
+            LOGGER.debug(f"mitmproxy translator: Failed to parse JSON from mock server request: {flow.request.get_text()}")
+            flow.response = Response.make(400, json.dumps({"error": "Cannot parse JSON. (likely just an overzealous vuln scanner sending malformed data)"}), {"Content-Type": "application/json"})
+            flow.resume()
+            return
+        LOGGER.info(f"Mock server request for action '{action}' to host '{host}': {data}")
 
         old_guid = guid
         new_guid = str(uuid.uuid4())
@@ -131,7 +142,14 @@ class SocketHttpTranslator:
         self.new_guid_to_server_ws_futures[new_guid] = server_ws_response
 
         flow.intercept()
-        await self._send_websocket_to_server(data)
+
+        if host not in self.flows:
+            LOGGER.error(f"No WebSocket connection exists for host: {host}")
+            flow.response = Response.make(500, json.dumps({"error": f"No WebSocket connection for host: {host}"}), {"Content-Type": "application/json"})
+            flow.resume()
+            return
+
+        await self._send_websocket_to_server(data, host)
 
         try:
             response = await asyncio.wait_for(server_ws_response, timeout=5)
@@ -146,11 +164,13 @@ class SocketHttpTranslator:
 
     async def _handle_mock_server_response(self, flow: HTTPFlow):
         guid = flow.request.headers.get("guid")
+        # host = flow.request.headers.get("wshost")
+        host = flow.request.host.split(MOCKSERVER_HOST_SUFFIX)[0]
         response = json.loads(flow.response.get_text())
         response[self.guid_key_receive] = guid
-        await self._send_websocket_to_client(json.dumps(response))
+        await self._send_websocket_to_client(json.dumps(response), host)
 
-    async def _send_web_request_through_proxy(self, action, data):
+    async def _send_web_request_through_proxy(self, action, data, host):
         action = url_safe_encode(action)
         guid = data[self.guid_key_send]
 
@@ -161,36 +181,37 @@ class SocketHttpTranslator:
 
         data = json.dumps(data)
 
-        url = f"http://mockserver/{action}"
-        headers = {"Content-Type": "application/json", "guid": guid}
-        LOGGER.info(f"Sending request to {url}: {data}")
+        url = f"http://{host}{MOCKSERVER_HOST_SUFFIX}/{action}"
+        headers = {"Content-Type": "application/json", "guid": guid, "wshost": host}
+        LOGGER.info(f"Sending request to {url} for host {host}: {data}")
 
         try:
             await self.httpx_client.post(url, headers=headers, data=data, timeout=.05)
-        except: pass # for whatever reason, this request blocks the event loop until it times out. But for our purposes it's good enough to send it and forget it
+        except:
+            pass  # for whatever reason, this request blocks the event loop until it times out. But for our purposes it's good enough to send it and forget it
 
-    async def _send_websocket_to_client(self, msg):
-        await self._send_websocket(msg, True)
+    async def _send_websocket_to_client(self, msg, host):
+        await self._send_websocket(msg, True, host)
 
-    async def _send_websocket_to_server(self, msg):
-        await self._send_websocket(msg, False)
+    async def _send_websocket_to_server(self, msg, host):
+        await self._send_websocket(msg, False, host)
 
-    async def _send_websocket(self, msg, to_client: bool):
-        await self._check_or_refresh_flow()
+    async def _send_websocket(self, msg, to_client: bool, host: str):
+        await self._check_or_refresh_flow(host)
         if isinstance(msg, dict):
             msg = json.dumps(msg)
         if isinstance(msg, str):
             msg = msg.encode()
-        LOGGER.info(f"Sending WebSocket to {'client' if to_client else 'server'}: {msg}")
-        ctx.master.commands.call("inject.websocket", self.flow, to_client, msg)
+        LOGGER.info(f"Sending WebSocket to {'client' if to_client else 'server'} for host {host}: {msg}")
+        ctx.master.commands.call("inject.websocket", self.flows[host], to_client, msg)
         await asyncio.sleep(1)
 
-    async def _check_or_refresh_flow(self):
-        if self.flow is None:
-            LOGGER.error("No flow set. Refresh flow not implemented yet")
+    async def _check_or_refresh_flow(self, host):
+        if host not in self.flows:
+            LOGGER.error(f"No flow set for host {host}. Refresh flow not implemented yet")
             return
-        if self.flow.websocket is None:
-            LOGGER.warning("No websocket on flow")
+        if self.flows[host].websocket is None:
+            LOGGER.warning(f"No websocket on flow for host {host}")
             return
 
     def _parse_json_message(self, message: WebSocketMessage):
