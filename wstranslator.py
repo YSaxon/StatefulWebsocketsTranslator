@@ -32,7 +32,7 @@ def setup_logger():
 setup_logger()
 
 def url_safe_encode(s: str) -> str:
-    return quote(s, safe='')
+    return quote(s, safe=':')
 
 def url_safe_decode(s: str) -> str:
     return unquote(s)
