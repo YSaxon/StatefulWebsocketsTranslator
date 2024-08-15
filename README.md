@@ -83,11 +83,13 @@ A JSON key defining the action or route for the message, which will be used as t
 
 ## Limitations
 
-This tool assumes a specific structure for WebSocket messages. You may need to modify the code to match your application's message format.
+- This tool assumes a specific structure for WebSocket messages. You may need to modify the code to match your application's message format.
 In particular, it is assumed that the websocket messages are serialized as JSON. If this is not the case you will need to modify the code.
-  
+
 Note however that if your application does not use any form of state token then this entire architecture will be unsuited to the problem.
-  
+
+- Right now, the script has no ability to initialize the websocket creation, so each time you start, you will need initiate the connection by either bring up the site in your browser, or having Burp reconnect - if you highlight a websocket message in the history tab and send it to repeater, it will give you an option to reconnect if you aren't connected. This is probably something I should add, but haven't yet. Pull requests welcome.
+
 
 
 ## Contributing
