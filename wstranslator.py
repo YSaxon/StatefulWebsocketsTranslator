@@ -37,6 +37,18 @@ def url_safe_encode(s: str) -> str:
 def url_safe_decode(s: str) -> str:
     return unquote(s)
 
+def serialize_for_websocket(data: dict) -> str:
+    return json.dumps(data)
+
+class WebSocketDeserializerError(ValueError):
+    pass
+
+def deserialize_from_websocket(data: str) -> dict:
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError as e:
+        raise WebSocketDeserializerError(f"Failed to parse JSON from WebSocket message: {data}") from e
+
 class SocketHttpTranslator:
     def __init__(self, guid_key_send, guid_key_receive, action_key, burp_proxy_port):
         self.guid_key_send = guid_key_send
@@ -89,7 +101,7 @@ class SocketHttpTranslator:
 
     async def _handle_client_websocket(self, flow: HTTPFlow, message: WebSocketMessage, host: str):
         LOGGER.info(f"Translating client WebSocket to web request for host {host}: {message}")
-        message_json = self._parse_json_message(message)
+        message_json = self._parse_ws_message(message)
         if not message_json:
             return
 
@@ -104,7 +116,7 @@ class SocketHttpTranslator:
         await self._send_web_request_through_proxy(action, message_json, host)
 
     async def _handle_server_websocket(self, flow: HTTPFlow, message: WebSocketMessage, host: str):
-        message_json = self._parse_json_message(message)
+        message_json = self._parse_ws_message(message)
         if not message_json:
             return
 
@@ -172,7 +184,7 @@ class SocketHttpTranslator:
         response = json.loads(flow.response.get_text())
         if guid:
             response[self.guid_key_receive] = guid
-        await self._send_websocket_to_client(json.dumps(response), host)
+        await self._send_websocket_to_client(response, host)
 
     async def _send_web_request_through_proxy(self, action, data, host):
         action = url_safe_encode(action)
@@ -205,7 +217,7 @@ class SocketHttpTranslator:
     async def _send_websocket(self, msg, to_client: bool, host: str):
         await self._check_or_refresh_flow(host)
         if isinstance(msg, dict):
-            msg = json.dumps(msg)
+            msg = serialize_for_websocket(msg)
         if isinstance(msg, str):
             msg = msg.encode()
         LOGGER.info(f"Sending WebSocket to {'client' if to_client else 'server'} for host {host}: {msg}")
@@ -220,14 +232,14 @@ class SocketHttpTranslator:
             LOGGER.warning(f"No websocket on flow for host {host}")
             return
 
-    def _parse_json_message(self, message: WebSocketMessage):
+    def _parse_ws_message(self, message: WebSocketMessage):
         if not message.is_text:
             LOGGER.warning(f"Message is not text: {message}")
             return None
         try:
-            return json.loads(message.text)
-        except json.JSONDecodeError:
-            LOGGER.warning(f"Failed to parse WebSocket message as JSON: {message.text}")
+            return deserialize_from_websocket(message.text)
+        except WebSocketDeserializerError:
+            LOGGER.warning(f"Failed to deserialize WebSocket message: {message.text}")
             return None
 
 # Main setup
