@@ -12,7 +12,7 @@ StatefulWebsocketsTranslator is a MITM (Man-in-the-Middle) proxy tool designed t
 
 * Set this script as an upstream proxy for your regular attack proxy (eg Burp). 
 
-* Set Burp as your browser's proxy and browse the target site as usual. 
+* Set Burp as your browser's proxy and browse the target site as usual. Any non-ws messages will be forwarded unchanged.
 
 * Any websocket messages will be translated to HTTP and forwarded backwards through Burp in order to populate the target map.
 
