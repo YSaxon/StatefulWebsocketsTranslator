@@ -1,11 +1,24 @@
 # StatefulWebsocketsTranslator
 
-StatefulWebsocketsTranslator is a MITM (Man-in-the-Middle) proxy tool designed to convert WebSocket messages to HTTP requests and back. This tool is particularly useful for testing and analyzing WebSocket-based applications using HTTP-based security tools like Burp Suite.
+StatefulWebsocketsTranslator is a MITM (Man-in-the-Middle) proxy tool designed to convert WebSocket messages to HTTP requests and back, to allow web app vuln scanners that don't work (well) with websocket messages to scan websocket targets as if they were regular webservers.
 
-## Features
 
-- Provides a mock webserver to which HTTP requests can be made, that will be translated into websocket messages, and back
-- Forwards actual websocket messages triggered by normal usage to your primary attack proxy (Burp, ZAP, etc), in order to populate the target map
+
+
+## Overview
+![architectural diagram](https://github.com/user-attachments/assets/bcb85bef-016b-4dad-8f53-1df19248cde6)
+
+* First make sure that the websocket application is using JSON for messages, and configure the keys for state and action. See below.
+
+* Set this script as an upstream proxy for your regular attack proxy (eg Burp). 
+
+* Set Burp as your browser's proxy and browse the target site as usual. 
+
+* Any websocket messages will be translated to HTTP and forwarded backwards through Burp in order to populate the target map.
+
+* You will see a site appear in the target map called `{targetsite.com}.wsmockserver` with those translated HTTP messages.
+
+* Tell Burp to scan that site. All the web requests it makes to `{targetsite.com}.wsmockserver` will be translated into ws messages.
 
 ## Prerequisites
 
@@ -55,31 +68,28 @@ StatefulWebsocketsTranslator is a MITM (Man-in-the-Middle) proxy tool designed t
 - `--burp`: Port that Burp proxy is listening on (default: 8080)
 - `--mitm`: Port for the MITM proxy (default: 8081)
 - `--loglevel`: Set the logging level (choices: DEBUG, INFO, WARNING, ERROR, CRITICAL; default: INFO)
+
+These should all be fairly clear.
+  
 - `--id_request`: State ID key in the client's WebSocket messages (default: 'id')
-- `--action`: Action key in the client's WebSocket messages (default: 'action')
 - `--id_response`: State ID key in the server's WebSocket messages (default: 'requestId')
 
-## How It Works
+These are JSON keys for the request and response respectively, that together define which response is to which request. Without this it would be hard or impossible to run a vuln scan in parallel, at least while using standard web scanner paradigms as this is meant to allow. In order to prevent duplicate state tokens while using the webscanner, the script will always create a new guid for the websocket messages to/and from the server itself, and then restore the old state token used when responding back to the browser or scanner.
 
-1. WebSocket messages from the client are intercepted and converted to HTTP POST requests.
-2. These HTTP requests are sent through Burp Suite for analysis and modification.
-3. The proxy intercepts the responses and converts them back to WebSocket messages.
-4. The converted messages are sent to the original WebSocket server.
-5. Responses from the WebSocket server are similarly intercepted, converted, and passed through Burp Suite before being sent back to the client.
+- `--action`: Action key in the client's WebSocket messages (default: 'action')
+  
+A JSON key defining the action or route for the message, which will be used as the URL path in the HTTP conversion
+
 
 ## Limitations
 
-- This tool assumes a specific structure for WebSocket messages. You may need to modify the code to match your application's message format.
-- Performance may be impacted due to the conversion process and additional network hops.
+This tool assumes a specific structure for WebSocket messages. You may need to modify the code to match your application's message format.
+In particular, it is assumed that the websocket messages are serialized as JSON. If this is not the case you will need to modify the code.
+  
+Note however that if your application does not use any form of state token then this entire architecture will be unsuited to the problem.
+  
+
 
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Disclaimer
-
-This tool is for educational and testing purposes only. Always ensure you have permission before testing any systems you do not own or have explicit authorization to test.
