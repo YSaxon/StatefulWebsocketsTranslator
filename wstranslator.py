@@ -37,6 +37,7 @@ def url_safe_encode(s: str) -> str:
 def url_safe_decode(s: str) -> str:
     return unquote(s)
 
+# If your application uses something other than JSON as a message format, you can replace these functions
 def serialize_for_websocket(data: dict) -> str:
     return json.dumps(data)
 
@@ -49,14 +50,18 @@ def deserialize_from_websocket(data: str) -> dict:
     except json.JSONDecodeError as e:
         raise WebSocketDeserializerError(f"Failed to parse JSON from WebSocket message: {data}") from e
 
+# If your application uses something other than a guid as a state token, you can replace this function
+def generate_new_statetoken() -> str:
+    return str(uuid.uuid4())
+
 class SocketHttpTranslator:
-    def __init__(self, guid_key_send, guid_key_receive, action_key, burp_proxy_port):
-        self.guid_key_send = guid_key_send
-        self.guid_key_receive = guid_key_receive
+    def __init__(self, statetoken_key_send, statetoken_key_receive, action_key, burp_proxy_port):
+        self.statetoken_key_send = statetoken_key_send
+        self.statetoken_key_receive = statetoken_key_receive
         self.action_key = action_key
         self.flows = {}  # Dictionary to store flows for each host
         self.burp_proxy_port = burp_proxy_port
-        self.new_guid_to_server_ws_futures = {}
+        self.new_statetoken_to_server_ws_futures = {}
         self.httpx_client = httpx.AsyncClient(proxy=f"http://localhost:{self.burp_proxy_port}", verify=False)
 
     # mitmproxy hooks
@@ -106,10 +111,10 @@ class SocketHttpTranslator:
             return
 
         action = message_json.get(self.action_key)
-        guid = message_json.get(self.guid_key_send)
+        statetoken = message_json.get(self.statetoken_key_send)
 
-        if not guid or guid == "heartbeatAck" or guid in self.new_guid_to_server_ws_futures:
-            LOGGER.info(f"Skipping message with GUID: {guid}")
+        if not statetoken or statetoken == "heartbeatAck" or statetoken in self.new_statetoken_to_server_ws_futures:
+            LOGGER.info(f"Skipping message with statetoken: {statetoken}")
             return
 
         message.drop()  # Don't forward to server as is
@@ -120,20 +125,20 @@ class SocketHttpTranslator:
         if not message_json:
             return
 
-        guid = message_json.get(self.guid_key_receive)
-        if not guid or guid == "heartbeatAck":
+        statetoken = message_json.get(self.statetoken_key_receive)
+        if not statetoken or statetoken == "heartbeatAck":
             return
 
-        if guid not in self.new_guid_to_server_ws_futures:  # Not a response to a client message
+        if statetoken not in self.new_statetoken_to_server_ws_futures:  # Not a response to a client message
             return
 
         message.drop()  # Don't forward to client as is
-        future = self.new_guid_to_server_ws_futures.pop(guid)
+        future = self.new_statetoken_to_server_ws_futures.pop(statetoken)
         future.set_result(message_json)
 
     async def _handle_mock_server_request(self, flow: HTTPFlow):
         action = url_safe_decode(flow.request.path_components[0])
-        guid = flow.request.headers.get("guid")
+        statetoken = flow.request.headers.get("statetoken")
         # host = flow.request.headers.get("wshost")
         host = flow.request.host.split(MOCKSERVER_HOST_SUFFIX)[0]
         try:
@@ -145,13 +150,13 @@ class SocketHttpTranslator:
             return
         LOGGER.info(f"Mock server request for action '{action}' to host '{host}': {data}")
 
-        old_guid = guid
-        new_guid = str(uuid.uuid4())
-        data[self.guid_key_send] = new_guid
+        old_statetoken = statetoken
+        new_statetoken = generate_new_state_token()
+        data[self.statetoken_key_send] = new_statetoken
         data[self.action_key] = action
 
         server_ws_response = asyncio.Future()
-        self.new_guid_to_server_ws_futures[new_guid] = server_ws_response
+        self.new_statetoken_to_server_ws_futures[new_statetoken] = server_ws_response
 
         flow.intercept()
 
@@ -165,42 +170,42 @@ class SocketHttpTranslator:
 
         try:
             response = await asyncio.wait_for(server_ws_response, timeout=5)
-            del response[self.guid_key_receive]
+            del response[self.statetoken_key_receive]
             flow.resume()
             headers = {"Content-Type": "application/json"}
-            if old_guid:
-                headers["guid"] = old_guid
+            if old_statetoken:
+                headers["statetoken"] = old_statetoken
             flow.response = Response.make(200, json.dumps(response), headers)
         except asyncio.TimeoutError:
-            del self.new_guid_to_server_ws_futures[new_guid]
+            del self.new_statetoken_to_server_ws_futures[new_statetoken]
             flow.response = Response.make(504, json.dumps({"error": "Request timed out"}), {"Content-Type": "application/json"})
         finally:
-            self.new_guid_to_server_ws_futures.pop(new_guid, None)
+            self.new_statetoken_to_server_ws_futures.pop(new_statetoken, None)
 
     async def _handle_mock_server_response(self, flow: HTTPFlow):
-        guid = flow.request.headers.get("guid",None)
+        statetoken = flow.request.headers.get("statetoken",None)
         # host = flow.request.headers.get("wshost")
         host = flow.request.host.split(MOCKSERVER_HOST_SUFFIX)[0]
         response = json.loads(flow.response.get_text())
-        if guid:
-            response[self.guid_key_receive] = guid
+        if statetoken:
+            response[self.statetoken_key_receive] = statetoken
         await self._send_websocket_to_client(response, host)
 
     async def _send_web_request_through_proxy(self, action, data, host):
         action = url_safe_encode(action)
-        guid = data[self.guid_key_send]
+        statetoken = data[self.statetoken_key_send]
 
         if isinstance(data, str):
             data = json.loads(data)
         del data[self.action_key]
-        del data[self.guid_key_send]
+        del data[self.statetoken_key_send]
 
         data = json.dumps(data)
 
         url = f"http://{host}{MOCKSERVER_HOST_SUFFIX}/{action}"
         headers = {"Content-Type": "application/json"}
-        if guid:
-            headers["guid"] = guid
+        if statetoken:
+            headers["statetoken"] = statetoken
         LOGGER.info(f"Sending request to {url} for host {host}: {data}")
 
         try:
@@ -304,7 +309,7 @@ class ProxyTester:
 
 
 async def run_mitm_proxy(args=config):
-    combined_server = SocketHttpTranslator(guid_key_receive=config.id_response, guid_key_send=config.id_request, action_key=config.action, burp_proxy_port=config.burp)
+    combined_server = SocketHttpTranslator(statetoken_key_receive=config.id_response, statetoken_key_send=config.id_request, action_key=config.action, burp_proxy_port=config.burp)
     proxy_tester = ProxyTester(burp_proxy_port=config.burp, mitmproxy_port=config.mitm)
     addons = [combined_server,proxy_tester]
 
