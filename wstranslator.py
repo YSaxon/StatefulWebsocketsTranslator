@@ -155,7 +155,10 @@ class SocketHttpTranslator:
             response = await asyncio.wait_for(server_ws_response, timeout=5)
             del response[self.guid_key_receive]
             flow.resume()
-            flow.response = Response.make(200, json.dumps(response), {"Content-Type": "application/json", "guid": old_guid})
+            headers = {"Content-Type": "application/json"}
+            if old_guid:
+                headers["guid"] = old_guid
+            flow.response = Response.make(200, json.dumps(response), headers)
         except asyncio.TimeoutError:
             del self.new_guid_to_server_ws_futures[new_guid]
             flow.response = Response.make(504, json.dumps({"error": "Request timed out"}), {"Content-Type": "application/json"})
@@ -163,11 +166,12 @@ class SocketHttpTranslator:
             self.new_guid_to_server_ws_futures.pop(new_guid, None)
 
     async def _handle_mock_server_response(self, flow: HTTPFlow):
-        guid = flow.request.headers.get("guid")
+        guid = flow.request.headers.get("guid",None)
         # host = flow.request.headers.get("wshost")
         host = flow.request.host.split(MOCKSERVER_HOST_SUFFIX)[0]
         response = json.loads(flow.response.get_text())
-        response[self.guid_key_receive] = guid
+        if guid:
+            response[self.guid_key_receive] = guid
         await self._send_websocket_to_client(json.dumps(response), host)
 
     async def _send_web_request_through_proxy(self, action, data, host):
@@ -182,7 +186,9 @@ class SocketHttpTranslator:
         data = json.dumps(data)
 
         url = f"http://{host}{MOCKSERVER_HOST_SUFFIX}/{action}"
-        headers = {"Content-Type": "application/json", "guid": guid, "wshost": host}
+        headers = {"Content-Type": "application/json"}
+        if guid:
+            headers["guid"] = guid
         LOGGER.info(f"Sending request to {url} for host {host}: {data}")
 
         try:
