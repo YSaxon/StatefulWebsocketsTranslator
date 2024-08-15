@@ -20,22 +20,11 @@ StatefulWebsocketsTranslator is a MITM (Man-in-the-Middle) proxy tool designed t
 
 * Tell Burp to scan that site. All the web requests it makes to `{targetsite.com}.wsmockserver` will be translated into ws messages.
 
-## Prerequisites
-
-- Python 3.7+
-- mitmproxy
-- httpx
-
 ## Installation
 
-1. Clone this repository:
    ```
    git clone https://github.com/ysaxon/StatefulWebsocketsTranslator.git
    cd StatefulWebsocketsTranslator
-   ```
-
-2. Install the required dependencies:
-   ```
    pip install mitmproxy httpx
    ```
 
