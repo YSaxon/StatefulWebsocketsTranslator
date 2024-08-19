@@ -38,12 +38,12 @@ StatefulWebsocketsTranslator is a MITM (Man-in-the-Middle) proxy tool designed t
 
 3. Run the StatefulWebsocketsTranslator:
    ```
-   python stateful_websockets_translator.py
+   python wstranslator.py
    ```
 
    You can customize the configuration using command-line arguments:
    ```
-   python stateful_websockets_translator.py --burp 8080 --mitm 8081 --loglevel INFO --id_request id --action action --id_response requestId
+   python wstranslator.py --burp 8080 --mitm 8081 --loglevel INFO --id_request id --action action --id_response requestId
    ```
 
 4. The script will start and perform a self-test to ensure everything is set up correctly.
