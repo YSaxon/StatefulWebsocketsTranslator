@@ -151,7 +151,7 @@ class SocketHttpTranslator:
         LOGGER.info(f"Mock server request for action '{action}' to host '{host}': {data}")
 
         old_statetoken = statetoken
-        new_statetoken = generate_new_state_token()
+        new_statetoken = generate_new_statetoken()
         data[self.statetoken_key_send] = new_statetoken
         data[self.action_key] = action
 
