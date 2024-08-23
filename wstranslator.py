@@ -57,6 +57,11 @@ def generate_new_statetoken() -> str:
 def is_dict_like(obj):
     return hasattr(obj, '__getitem__')
 
+def get_flows_hostkey_from_flow(flow:HTTPFlow):
+    if flow.request.port != 443:
+        return f"{flow.request.host}_{flow.request.port}"
+    else: return flow.request.host
+
 class SocketHttpTranslator:
     def __init__(self, statetoken_key_send, statetoken_key_receive, action_key, burp_proxy_port):
         self.statetoken_key_send = statetoken_key_send
@@ -70,7 +75,7 @@ class SocketHttpTranslator:
     # mitmproxy hooks
 
     async def websocket_start(self, flow: HTTPFlow):
-        host = flow.request.host
+        host = get_flows_hostkey_from_flow(flow)
         LOGGER.info(f"WebSocket connection established for host {host}: {flow.request.url}")
         self.flows[host] = flow
 
@@ -79,7 +84,7 @@ class SocketHttpTranslator:
             return
 
         message = flow.websocket.messages[-1]
-        host = flow.request.host
+        host = get_flows_hostkey_from_flow(flow)
         if message.from_client:
             await self._handle_client_websocket(flow, message, host)
         else:
