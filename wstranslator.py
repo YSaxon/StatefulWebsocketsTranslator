@@ -54,6 +54,9 @@ def deserialize_from_websocket(data: str) -> dict:
 def generate_new_statetoken() -> str:
     return str(uuid.uuid4())
 
+def is_dict_like(obj):
+    return hasattr(obj, '__getitem__')
+
 class SocketHttpTranslator:
     def __init__(self, statetoken_key_send, statetoken_key_receive, action_key, burp_proxy_port):
         self.statetoken_key_send = statetoken_key_send
@@ -104,14 +107,16 @@ class SocketHttpTranslator:
             return False
         return True
 
+
     async def _handle_client_websocket(self, flow: HTTPFlow, message: WebSocketMessage, host: str):
         LOGGER.info(f"Translating client WebSocket to web request for host {host}: {message}")
         message_json = self._parse_ws_message(message)
-        if not message_json:
+        if not message_json or not is_dict_like(message_json) or not self.action_key in message_json or not self.statetoken_key_send in message_json:
+            LOGGER.warning(f"Skipping client message not matching proper schema: {message}, and allowing it through to the server unchanged")
             return
 
-        action = message_json.get(self.action_key)
-        statetoken = message_json.get(self.statetoken_key_send)
+        action = message_json[self.action_key]
+        statetoken = message_json[self.statetoken_key_send]
 
         if not statetoken or statetoken == "heartbeatAck" or statetoken in self.new_statetoken_to_server_ws_futures:
             LOGGER.info(f"Skipping message with statetoken: {statetoken}")
@@ -122,10 +127,11 @@ class SocketHttpTranslator:
 
     async def _handle_server_websocket(self, flow: HTTPFlow, message: WebSocketMessage, host: str):
         message_json = self._parse_ws_message(message)
-        if not message_json:
+        if not message_json or not is_dict_like(message_json) or not self.statetoken_key_receive in message_json:
+            LOGGER.warning(f"Skipping server message not matching proper schema: {message}, and allowing it through to the client unchanged")
             return
 
-        statetoken = message_json.get(self.statetoken_key_receive)
+        statetoken = message_json[self.statetoken_key_receive]
         if not statetoken or statetoken == "heartbeatAck":
             return
 
